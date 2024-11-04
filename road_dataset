@@ -1,0 +1,50 @@
+To implement data augmentation for the SuperTuxKart Road Dataset, you need to modify the `get_transform` method in the `RoadDataset` class to include a custom augmentation pipeline. This will involve using the `road_transforms` module to apply various transformations to the training data. Here's how you can do it:
+
+1. **Define Custom Augmentations**: You need to decide on the types of augmentations that are suitable for your task. Common augmentations for image data include random rotations, flips, color jitter, and scaling. Since this is a road segmentation task, you might want to consider augmentations that preserve the spatial structure of the road, such as random crops, rotations, and horizontal flips.
+
+2. **Implement the Augmentation Pipeline**: Modify the `get_transform` method to include these augmentations when the `transform_pipeline` is set to `"aug"`.
+
+Here's an example of how you might implement this:
+
+```python
+def get_transform(self, transform_pipeline: str):
+    xform = None
+
+    if transform_pipeline == "default":
+        xform = road_transforms.Compose(
+            [
+                road_transforms.ImageLoader(self.episode_path),
+                road_transforms.DepthLoader(self.episode_path),
+                road_transforms.TrackProcessor(self.track),
+            ]
+        )
+    elif transform_pipeline == "aug":
+        xform = road_transforms.Compose(
+            [
+                road_transforms.ImageLoader(self.episode_path),
+                road_transforms.DepthLoader(self.episode_path),
+                road_transforms.TrackProcessor(self.track),
+                road_transforms.RandomHorizontalFlip(p=0.5),
+                road_transforms.RandomRotation(degrees=15),
+                road_transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+                road_transforms.RandomCrop((96, 128), padding=4),
+            ]
+        )
+
+    if xform is None:
+        raise ValueError(f"Invalid transform {transform_pipeline} specified!")
+
+    return xform
+```
+
+### Explanation:
+- **RandomHorizontalFlip**: This randomly flips the image horizontally with a probability of 0.5. This is useful for road images as roads are often symmetric.
+- **RandomRotation**: This applies a random rotation to the image within a specified degree range. This can help the model become invariant to slight rotations.
+- **ColorJitter**: This randomly changes the brightness, contrast, saturation, and hue of the image, which can help the model generalize to different lighting conditions.
+- **RandomCrop**: This randomly crops the image to a specified size, which can help the model focus on different parts of the image.
+
+### Note:
+- Ensure that the `road_transforms` module has the necessary transformation classes (e.g., `RandomHorizontalFlip`, `RandomRotation`, etc.). If not, you may need to implement these or use a library like `torchvision.transforms` if compatible.
+- Only apply these augmentations to the training set, not the validation or test sets, to ensure that the model is evaluated on unaltered data.
+
+Finally, when loading the data for training, make sure to pass `"aug"` as the `transform_pipeline` argument to the `load_data` function to apply these augmentations.
