@@ -1,7 +1,10 @@
 import argparse
 from datetime import datetime
 from pathlib import Path
+import torch
+import torch.nn as nn
 
+import torch.nn.functional as F
 import numpy as np
 import torch
 import torch.utils.tensorboard as tb
@@ -50,64 +53,132 @@ def train(
     global_step = 0
     metrics = {"train_acc": [], "val_acc": []}
 
-    # training loop
+
+    # Training loop
     for epoch in range(num_epoch):
-        # clear metrics at beginning of epoch
+        # Clear metrics at beginning of epoch
         for key in metrics:
             metrics[key].clear()
 
         model.train()
 
-        for img, label in train_data:
-            img, label = img.to(device), label.to(device)
+        for batch in train_data:
+            img = batch['image'].to(device)
+            depth = batch['depth'].to(device)
+            track = batch['track'].to(device)
 
             # Forward pass
-            logits = model(img)
-            loss = loss_func(logits, label)
+            logits, pred_depth = model(img)
+
+            # Calculate losses
+            seg_loss = nn.CrossEntropyLoss()(logits, track)
+            depth_loss = nn.MSELoss()(pred_depth, depth)
+
+            # Combine losses
+            loss = seg_loss + depth_loss
 
             # Backward pass and optimization
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
-            # Calculate training accuracy
+            # Calculate training accuracy for segmentation
             _, preds = torch.max(logits, 1)
-            accuracy = (preds == label).float().mean().item()
+            accuracy = (preds == track).float().mean().item()
             metrics["train_acc"].append(accuracy)
 
             global_step += 1
 
-            global_step += 1
-
-        # disable gradient computation and switch to evaluation mode
+        # Disable gradient computation and switch to evaluation mode
         with torch.inference_mode():
             model.eval()
 
-            for img, label in val_data:
-                img, label = img.to(device), label.to(device)
+            for batch in val_data:
+                img = batch['image'].to(device)
+                depth = batch['depth'].to(device)
+                track = batch['track'].to(device)
 
                 # Forward pass
-                logits = model(img)
+                logits, pred_depth = model(img)
 
-                # Calculate validation accuracy
+                # Calculate validation accuracy for segmentation
                 _, preds = torch.max(logits, 1)
-                accuracy = (preds == label).float().mean().item()
+                accuracy = (preds == track).float().mean().item()
                 metrics["val_acc"].append(accuracy)
 
-        # log average train and val accuracy to tensorboard
+        # Log average train and val accuracy to tensorboard
         epoch_train_acc = torch.as_tensor(metrics["train_acc"]).mean()
         epoch_val_acc = torch.as_tensor(metrics["val_acc"]).mean()
 
         logger.add_scalar('train_accuracy', epoch_train_acc, epoch)
         logger.add_scalar('val_accuracy', epoch_val_acc, epoch)
 
-        # print on first, last, every 10th epoch
+        # Print on first, last, every 10th epoch
         if epoch == 0 or epoch == num_epoch - 1 or (epoch + 1) % 10 == 0:
             print(
                 f"Epoch {epoch + 1:2d} / {num_epoch:2d}: "
                 f"train_acc={epoch_train_acc:.4f} "
                 f"val_acc={epoch_val_acc:.4f}"
             )
+
+    # # training loop
+    # for epoch in range(num_epoch):
+    #     # clear metrics at beginning of epoch
+    #     for key in metrics:
+    #         metrics[key].clear()
+
+    #     model.train()
+
+    #     for img, label in train_data:
+    #         img, label = img.to(device), label.to(device)
+
+    #         # Forward pass
+    #         logits = model(img)
+    #         loss = loss_func(logits, label)
+
+    #         # Backward pass and optimization
+    #         optimizer.zero_grad()
+    #         loss.backward()
+    #         optimizer.step()
+
+    #         # Calculate training accuracy
+    #         _, preds = torch.max(logits, 1)
+    #         accuracy = (preds == label).float().mean().item()
+    #         metrics["train_acc"].append(accuracy)
+
+    #         global_step += 1
+
+    #         global_step += 1
+
+    #     # disable gradient computation and switch to evaluation mode
+    #     with torch.inference_mode():
+    #         model.eval()
+
+    #         for img, label in val_data:
+    #             img, label = img.to(device), label.to(device)
+
+    #             # Forward pass
+    #             logits = model(img)
+
+    #             # Calculate validation accuracy
+    #             _, preds = torch.max(logits, 1)
+    #             accuracy = (preds == label).float().mean().item()
+    #             metrics["val_acc"].append(accuracy)
+
+    #     # log average train and val accuracy to tensorboard
+    #     epoch_train_acc = torch.as_tensor(metrics["train_acc"]).mean()
+    #     epoch_val_acc = torch.as_tensor(metrics["val_acc"]).mean()
+
+    #     logger.add_scalar('train_accuracy', epoch_train_acc, epoch)
+    #     logger.add_scalar('val_accuracy', epoch_val_acc, epoch)
+
+    #     # print on first, last, every 10th epoch
+    #     if epoch == 0 or epoch == num_epoch - 1 or (epoch + 1) % 10 == 0:
+    #         print(
+    #             f"Epoch {epoch + 1:2d} / {num_epoch:2d}: "
+    #             f"train_acc={epoch_train_acc:.4f} "
+    #             f"val_acc={epoch_val_acc:.4f}"
+    #         )
 
     # save and overwrite the model in the root directory for grading
     save_model(model)
