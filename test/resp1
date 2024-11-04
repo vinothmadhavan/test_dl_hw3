@@ -1,0 +1,206 @@
+To improve your road detection model's performance according to the evaluation criteria, you'll want to ensure that you're addressing both segmentation and depth prediction effectively. Here is a revised version of your model and training code with some improvements:
+
+1. **Use of U-Net Architecture**: Implementing a U-Net-like architecture with skip connections helps capture more context for accurate segmentation.
+2. **Loss Functions**: Incorporate both cross-entropy loss for segmentation and mean squared error (MSE) for depth prediction.
+3. **Better Normalization and Activation for Depth**: Using sigmoid activation for depth prediction helps keep the values in a normalized (0, 1) range.
+4. **Metrics Logging**: Ensure you log metrics like IoU for segmentation and MAE for depth prediction.
+
+Here's how you can implement these ideas:
+
+### Updated Model Code
+
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from pathlib import Path
+
+HOMEWORK_DIR = Path(__file__).resolve().parent
+INPUT_MEAN = [0.2788, 0.2657, 0.2629]
+INPUT_STD = [0.2064, 0.1944, 0.2252]
+
+class DoubleConv(nn.Module):
+    """
+    A block of two convolution layers followed by BatchNorm and ReLU activation.
+    """
+    def __init__(self, in_channels, out_channels):
+        super(DoubleConv, self).__init__()
+        self.double_conv = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, x):
+        return self.double_conv(x)
+
+class UNet(nn.Module):
+    """
+    UNet model for semantic segmentation and depth estimation.
+    """
+    def __init__(self, in_channels=3, num_classes=3):
+        super(UNet, self).__init__()
+        self.input_mean = torch.as_tensor(INPUT_MEAN).view(1, 3, 1, 1)
+        self.input_std = torch.as_tensor(INPUT_STD).view(1, 3, 1, 1)
+
+        self.down1 = DoubleConv(in_channels, 64)
+        self.down2 = DoubleConv(64, 128)
+        self.down3 = DoubleConv(128, 256)
+
+        self.bottleneck = DoubleConv(256, 512)
+
+        self.up3 = DoubleConv(512 + 256, 256)
+        self.up2 = DoubleConv(256 + 128, 128)
+        self.up1 = DoubleConv(128 + 64, 64)
+
+        self.segmentation_head = nn.Conv2d(64, num_classes, kernel_size=1)
+        self.depth_head = nn.Conv2d(64, 1, kernel_size=1)
+
+    def forward(self, x):
+        x = (x - self.input_mean.to(x.device)) / self.input_std.to(x.device)
+
+        # Downsample
+        d1 = self.down1(x)
+        d2 = self.down2(F.max_pool2d(d1, 2))
+        d3 = self.down3(F.max_pool2d(d2, 2))
+
+        # Bottleneck
+        b = self.bottleneck(F.max_pool2d(d3, 2))
+
+        # Upsample
+        u3 = self.up3(torch.cat([F.interpolate(b, scale_factor=2, mode='bilinear', align_corners=True), d3], dim=1))
+        u2 = self.up2(torch.cat([F.interpolate(u3, scale_factor=2, mode='bilinear', align_corners=True), d2], dim=1))
+        u1 = self.up1(torch.cat([F.interpolate(u2, scale_factor=2, mode='bilinear', align_corners=True), d1], dim=1))
+
+        logits = self.segmentation_head(u1)
+        depth = torch.sigmoid(self.depth_head(u1))
+
+        return logits, depth
+
+    def predict(self, x):
+        logits, depth = self(x)
+        pred = logits.argmax(dim=1)
+        return pred, depth
+
+MODEL_FACTORY = {
+    "unet": UNet,
+}
+```
+
+### Updated Training Code
+
+```python
+import argparse
+from datetime import datetime
+from pathlib import Path
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.utils.tensorboard as tb
+from .models import load_model, save_model
+from .datasets.road_dataset import load_data
+# Import your confusion matrix calculation for IoU if available
+# from .metrics import ConfusionMatrix
+
+def train(exp_dir="logs", model_name="unet", num_epoch=50, lr=1e-3, batch_size=16, seed=2024):
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        print("CUDA not available, using CPU")
+        device = torch.device("cpu")
+
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    log_dir = Path(exp_dir) / f"{model_name}_{datetime.now().strftime('%m%d_%H%M%S')}"
+    logger = tb.SummaryWriter(log_dir)
+
+    model = load_model(model_name)
+    model = model.to(device)
+    model.train()
+
+    train_data = load_data("road_data/train", shuffle=True, batch_size=batch_size, num_workers=2)
+    val_data = load_data("road_data/val", shuffle=False)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+    # Add confusion matrix for IoU
+    # confusion_matrix = ConfusionMatrix(num_classes=3)
+
+    for epoch in range(num_epoch):
+        model.train()
+        epoch_loss = 0.0
+        # Reset confusion matrix
+        # confusion_matrix.reset()
+
+        for batch in train_data:
+            img = batch['image'].to(device)
+            depth = batch['depth'].to(device)
+            track = batch['track'].to(device)
+
+            logits, pred_depth = model(img)
+
+            seg_loss = nn.CrossEntropyLoss()(logits, track)
+            depth_loss = nn.MSELoss()(pred_depth, depth)
+
+            loss = seg_loss + depth_loss
+            epoch_loss += loss.item()
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            # Update confusion matrix
+            # _, preds = torch.max(logits, 1)
+            # confusion_matrix.update(preds, track)
+
+        # Compute IoU
+        # iou = confusion_matrix.compute_iou()
+
+        model.eval()
+        with torch.no_grad():
+            for batch in val_data:
+                img = batch['image'].to(device)
+                depth = batch['depth'].to(device)
+                track = batch['track'].to(device)
+
+                logits, pred_depth = model(img)
+
+                _, preds = torch.max(logits, 1)
+                accuracy = (preds == track).float().mean().item()
+
+                # Perform MAE calculation if required
+
+        print(f"Epoch {epoch + 1}/{num_epoch}, Loss: {epoch_loss:.4f}, Accuracy: {accuracy:.4f}")
+
+        # Log metrics to TensorBoard
+        logger.add_scalar('Loss/train', epoch_loss, epoch)
+        # logger.add_scalar('IoU', iou, epoch)
+
+    save_model(model)
+    torch.save(model.state_dict(), log_dir / f"{model_name}.th")
+    print(f"Model saved to {log_dir / f'{model_name}.th'}")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--exp_dir", type=str, default="logs")
+    parser.add_argument("--model_name", type=str, default="unet")
+    parser.add_argument("--num_epoch", type=int, default=50)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--seed", type=int, default=2024)
+
+    train(**vars(parser.parse_args()))
+```
+
+### Notes
+
+- The `DoubleConv` class represents the basic building block of the U-Net, consisting of two convolutional layers, each followed by batch normalization and ReLU activation.
+- You need to implement or import a confusion matrix class to compute IoU correctly. This is often available in common deep learning frameworks or can be custom implemented.
+- Adjust the dataset loading part (`load_data`) to ensure that training and validation loaders are configured correctly.
+- Make sure the image dimensions are consistent with how you've set the model structure (especially during the upsampling phase).
+
+These changes should improve the model's ability to handle both segmentation and depth prediction, and better align it with the evaluation criteria given.
