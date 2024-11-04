@@ -1,0 +1,96 @@
+The error you're encountering is due to a mismatch in the spatial dimensions of the tensors being added together in the skip connection. This typically happens when the upsampling operation does not perfectly reverse the downsampling operation, leading to a size mismatch.
+
+To resolve this, you need to ensure that the spatial dimensions of the tensors being added in the skip connections match. This can be achieved by carefully managing the padding and output padding in the transposed convolution layers.
+
+Here's how you can adjust the `Detector` class to fix this issue:
+
+### Updated `Detector` Class
+
+```python
+class Detector(nn.Module):
+    def __init__(
+        self,
+        in_channels: int = 3,
+        num_classes: int = 3,
+    ):
+        super().__init__()
+
+        self.register_buffer("input_mean", torch.as_tensor(INPUT_MEAN))
+        self.register_buffer("input_std", torch.as_tensor(INPUT_STD))
+
+        # Downsampling layers
+        self.down1 = nn.Sequential(
+            nn.Conv2d(in_channels, 16, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU()
+        )
+        self.down2 = nn.Sequential(
+            nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU()
+        )
+
+        # Bottleneck
+        self.bottleneck = nn.Sequential(
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU()
+        )
+
+        # Upsampling layers
+        self.up1 = nn.Sequential(
+            nn.ConvTranspose2d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU()
+        )
+        self.up2 = nn.Sequential(
+            nn.ConvTranspose2d(32, 16, kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU()
+        )
+
+        # Segmentation head
+        self.segmentation_head = nn.Conv2d(16, num_classes, kernel_size=1)
+
+        # Depth head
+        self.depth_head = nn.Conv2d(16, 1, kernel_size=1)
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        z = (x - self.input_mean[None, :, None, None]) / self.input_std[None, :, None, None]
+
+        # Downsample
+        d1 = self.down1(z)
+        d2 = self.down2(d1)
+
+        # Bottleneck
+        b = self.bottleneck(d2)
+
+        # Upsample
+        u1 = self.up1(b)
+        u1 = u1[:, :, :d2.size(2), :d2.size(3)]  # Crop to match d2 size
+        u1 = u1 + d2  # Skip connection
+
+        u2 = self.up2(u1)
+        u2 = u2[:, :, :d1.size(2), :d1.size(3)]  # Crop to match d1 size
+        u2 = u2 + d1  # Skip connection
+
+        # Segmentation logits
+        logits = self.segmentation_head(u2)
+
+        # Depth estimation
+        depth = self.depth_head(u2)
+
+        return logits, depth
+
+    def predict(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        logits, raw_depth = self(x)
+        pred = logits.argmax(dim=1)
+        depth = torch.sigmoid(raw_depth)  # Normalize depth to [0, 1]
+        return pred, depth
+```
+
+### Key Adjustments:
+- **Output Padding**: Ensure that the `output_padding` in `ConvTranspose2d` is set correctly to help match the dimensions.
+- **Cropping**: After upsampling, crop the output to match the size of the corresponding downsampled feature map before adding them in the skip connection. This ensures that the dimensions match exactly.
+
+These changes should resolve the dimension mismatch error and allow the model to train correctly. Make sure to test the model with a small batch of data to verify that the forward pass works without errors.
