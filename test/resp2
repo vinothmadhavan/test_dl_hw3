@@ -1,0 +1,108 @@
+The assertion error you're seeing is due to the model's size exceeding a predefined limit (often set to ensure models are small enough for submission or evaluation). We need to reduce the model size to fit within this constraint, while trying to maintain as much performance as possible.
+
+Here are a few strategies to reduce the model's size:
+
+1. **Reduce the Number of Channels**: Decrease the number of channels in the convolutional layers.
+2. **Limit the Number of Layers**: Reduce the depth of your network by removing some layers.
+3. **Use Depthwise Separable Convolutions**: Consider using these instead of standard convolutions to reduce the number of parameters.
+4. **Decrease Width Multiplier**: If applicable, use a smaller multiplier to reduce the size of the entire model uniformly.
+
+Let's adjust the U-Net model to make it smaller:
+
+### Revised U-Net Model Code
+
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from pathlib import Path
+
+HOMEWORK_DIR = Path(__file__).resolve().parent
+INPUT_MEAN = [0.2788, 0.2657, 0.2629]
+INPUT_STD = [0.2064, 0.1944, 0.2252]
+
+class DoubleConv(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        """A block of two convolution layers with BatchNorm and ReLU activation."""
+        super(DoubleConv, self).__init__()
+        self.double_conv = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, x):
+        return self.double_conv(x)
+
+class SmallUNet(nn.Module):
+    def __init__(self, in_channels=3, num_classes=3):
+        """A compact version of the U-Net for segmentation and depth estimation."""
+        super(SmallUNet, self).__init__()
+        self.input_mean = torch.as_tensor(INPUT_MEAN).view(1, 3, 1, 1)
+        self.input_std = torch.as_tensor(INPUT_STD).view(1, 3, 1, 1)
+
+        # Fewer channels in each layer
+        self.down1 = DoubleConv(in_channels, 32)
+        self.down2 = DoubleConv(32, 64)
+
+        self.bottleneck = DoubleConv(64, 128)
+
+        self.up2 = DoubleConv(128 + 64, 64)
+        self.up1 = DoubleConv(64 + 32, 32)
+
+        self.segmentation_head = nn.Conv2d(32, num_classes, kernel_size=1)
+        self.depth_head = nn.Conv2d(32, 1, kernel_size=1)
+
+    def forward(self, x):
+        x = (x - self.input_mean.to(x.device)) / self.input_std.to(x.device)
+
+        # Downsample
+        d1 = self.down1(x)
+        d2 = self.down2(F.max_pool2d(d1, 2))
+
+        # Bottleneck
+        b = self.bottleneck(F.max_pool2d(d2, 2))
+
+        # Upsample
+        u2 = self.up2(torch.cat([F.interpolate(b, scale_factor=2, mode='bilinear', align_corners=True), d2], dim=1))
+        u1 = self.up1(torch.cat([F.interpolate(u2, scale_factor=2, mode='bilinear', align_corners=True), d1], dim=1))
+
+        logits = self.segmentation_head(u1)
+        depth = torch.sigmoid(self.depth_head(u1))
+
+        return logits, depth
+
+    def predict(self, x):
+        logits, depth = self(x)
+        pred = logits.argmax(dim=1)
+        return pred, depth
+
+MODEL_FACTORY = {
+    "unet": SmallUNet,
+}
+```
+
+### Key Changes
+
+- **Reduced Channels**: The channel count in each layer has been reduced to cut down the number of parameters.
+- **Fewer Layers**: Reduced the number of downsampling and upsampling layers, cutting down model depth and size.
+
+Once you've made these modifications, check the model size again to ensure it is within acceptable limits for your use case:
+
+### Model Size Check
+
+```python
+def calculate_model_size_mb(model: torch.nn.Module) -> float:
+    """Calculates model size in MB."""
+    return sum(p.numel() for p in model.parameters()) * 4 / 1024 / 1024
+
+# Example usage
+model_instance = SmallUNet()
+model_size_mb = calculate_model_size_mb(model_instance)
+assert model_size_mb <= 20, f"Model size is too large: {model_size_mb:.2f} MB"
+```
+
+These changes should help make the model small enough to satisfy your constraints while still being able to perform the required segmentation and depth estimation tasks effectively.
