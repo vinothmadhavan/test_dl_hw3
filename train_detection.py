@@ -7,8 +7,8 @@ import torch
 import torch.utils.tensorboard as tb
 
 from .models import ClassificationLoss, load_model, save_model
-from .utils import load_data
-
+from .datasets.road_dataset import load_data
+# from .utils import load_data
 
 def train(
     exp_dir: str = "logs",
@@ -38,8 +38,8 @@ def train(
     model = model.to(device)
     model.train()
 
-    train_data = load_data("classification_data/train", shuffle=True, batch_size=batch_size, num_workers=2)
-    val_data = load_data("classification_data/val", shuffle=False)
+    train_data = load_data("road_data/train", shuffle=True, batch_size=batch_size, num_workers=2)
+    val_data = load_data("road_data/val", shuffle=False)
 
     # create loss function and optimizer
     loss_func = ClassificationLoss()
