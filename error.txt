@@ -77,3 +77,29 @@ for epoch in range(num_epoch):
             f"train_acc={epoch_train_acc:.4f} "
             f"val_acc={epoch_val_acc:.4f}"
         )
+
+
+
+===============================================
+
+=============================================
+
+
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "C:\Users\divya\OneDrive\Desktop\MSAI\DL\homework3\homework\train_detection.py", line 272, in <module>
+    train(**vars(parser.parse_args()))
+  File "C:\Users\divya\OneDrive\Desktop\MSAI\DL\homework3\homework\train_detection.py", line 229, in train
+    logits, pred_depth = model(img)
+                         ^^^^^^^^^^
+  File "C:\Users\divya\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\nn\modules\module.py", line 1553, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\divya\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\nn\modules\module.py", line 1562, in _call_impl      
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\divya\OneDrive\Desktop\MSAI\DL\homework3\homework\models.py", line 289, in forward
+    u1 = self.up1(b) + d2  # Skip connection
+         ~~~~~~~~~~~~^~~~
+RuntimeError: The size of tensor a (64) must match the size of tensor b (32) at non-singleton dimension 3
