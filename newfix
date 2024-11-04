@@ -1,0 +1,166 @@
+The error you're encountering indicates a mismatch between the dimensions of the `logits` output from the model and the `track` target labels when computing the cross-entropy loss. Specifically, the spatial dimensions of the `logits` (48, 64) do not match those of the `track` (96, 128).
+
+To resolve this, we need to ensure that the upsampling operations in the `Detector` class correctly restore the spatial dimensions to match the input size. Let's adjust the `Detector` class to ensure the output dimensions are correct:
+
+### Updated `Detector` Class
+
+```python
+class Detector(nn.Module):
+    def __init__(
+        self,
+        in_channels: int = 3,
+        num_classes: int = 3,
+    ):
+        super().__init__()
+
+        self.register_buffer("input_mean", torch.as_tensor(INPUT_MEAN))
+        self.register_buffer("input_std", torch.as_tensor(INPUT_STD))
+
+        # Downsampling layers
+        self.down1 = nn.Sequential(
+            nn.Conv2d(in_channels, 16, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU()
+        )
+        self.down2 = nn.Sequential(
+            nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU()
+        )
+
+        # Bottleneck
+        self.bottleneck = nn.Sequential(
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU()
+        )
+
+        # Upsampling layers
+        self.up1 = nn.Sequential(
+            nn.ConvTranspose2d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU()
+        )
+        self.up2 = nn.Sequential(
+            nn.ConvTranspose2d(32, 16, kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU()
+        )
+
+        # Segmentation head
+        self.segmentation_head = nn.Conv2d(16, num_classes, kernel_size=1)
+
+        # Depth head
+        self.depth_head = nn.Conv2d(16, 1, kernel_size=1)
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        z = (x - self.input_mean[None, :, None, None]) / self.input_std[None, :, None, None]
+
+        # Downsample
+        d1 = self.down1(z)
+        d2 = self.down2(d1)
+
+        # Bottleneck
+        b = self.bottleneck(d2)
+
+        # Upsample
+        u1 = self.up1(b)
+        u1 = u1[:, :, :d2.size(2), :d2.size(3)]  # Crop to match d2 size
+        u1 = u1 + d2  # Skip connection
+
+        u2 = self.up2(u1)
+        u2 = u2[:, :, :d1.size(2), :d1.size(3)]  # Crop to match d1 size
+        u2 = u2 + d1  # Skip connection
+
+        # Segmentation logits
+        logits = self.segmentation_head(u2)
+
+        # Depth estimation
+        depth = self.depth_head(u2)
+
+        return logits, depth
+
+    def predict(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        logits, raw_depth = self(x)
+        pred = logits.argmax(dim=1)
+        depth = torch.sigmoid(raw_depth)  # Normalize depth to [0, 1]
+        return pred, depth
+```
+
+### Key Adjustments:
+- **Output Padding**: Ensure that the `output_padding` in `ConvTranspose2d` is set correctly to help match the dimensions.
+- **Cropping**: After upsampling, crop the output to match the size of the corresponding downsampled feature map before adding them in the skip connection. This ensures that the dimensions match exactly.
+
+### Updated `train_detection.py`
+
+Ensure that the training script correctly handles the data and computes the losses:
+
+```python
+def train(
+    exp_dir: str = "logs",
+    model_name: str = "detector",
+    num_epoch: int = 50,
+    lr: float = 1e-3,
+    batch_size: int = 16,
+    seed: int = 2024,
+    **kwargs,
+):
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        print("CUDA not available, using CPU")
+        device = torch.device("cpu")
+
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    log_dir = Path(exp_dir) / f"{model_name}_{datetime.now().strftime('%m%d_%H%M%S')}"
+    logger = tb.SummaryWriter(log_dir)
+
+    model = load_model(model_name, **kwargs)
+    model = model.to(device)
+    model.train()
+
+    train_data = load_data("road_data/train", shuffle=True, batch_size=batch_size, num_workers=2)
+    val_data = load_data("road_data/val", shuffle=False)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+    for epoch in range(num_epoch):
+        model.train()
+        for batch in train_data:
+            img = batch['image'].to(device)
+            depth = batch['depth'].to(device)
+            track = batch['track'].to(device)
+
+            logits, pred_depth = model(img)
+
+            seg_loss = nn.CrossEntropyLoss()(logits, track)
+            depth_loss = nn.MSELoss()(pred_depth, depth)
+
+            loss = seg_loss + depth_loss
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+        with torch.inference_mode():
+            model.eval()
+            for batch in val_data:
+                img = batch['image'].to(device)
+                depth = batch['depth'].to(device)
+                track = batch['track'].to(device)
+
+                logits, pred_depth = model(img)
+
+                _, preds = torch.max(logits, 1)
+                accuracy = (preds == track).float().mean().item()
+
+        print(f"Epoch {epoch + 1}/{num_epoch}, Loss: {loss.item():.4f}, Accuracy: {accuracy:.4f}")
+
+    save_model(model)
+    torch.save(model.state_dict(), log_dir / f"{model_name}.th")
+    print(f"Model saved to {log_dir / f'{model_name}.th'}")
+```
+
+These changes should resolve the dimension mismatch error and allow the model to train correctly. Make sure to test the model with a small batch of data to verify that the forward pass works without errors.
